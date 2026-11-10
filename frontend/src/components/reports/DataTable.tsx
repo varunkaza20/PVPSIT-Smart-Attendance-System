@@ -17,10 +17,9 @@ export function DataTable<T>({ columns, rows, rowKey, caption }: {
 }) {
   return (
     <div className="bg-pvpsit-card rounded-xl border border-pvpsit-border overflow-hidden">
-      <div className="overflow-auto max-h-[420px]">
-        <table className="w-full text-left border-collapse text-xs">
-          <caption className="sr-only">{caption}</caption>
-          <thead className="bg-slate-50 border-b border-pvpsit-border text-slate-600 font-semibold sticky top-0">
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse text-xs" aria-label={caption}>
+          <thead className="bg-slate-50 border-b border-pvpsit-border text-slate-600 font-semibold">
             <tr>
               {columns.map(c => (
                 <th key={c.header} scope="col" className={`px-4 py-3 whitespace-nowrap ${c.align === 'right' ? 'text-right' : ''}`}>

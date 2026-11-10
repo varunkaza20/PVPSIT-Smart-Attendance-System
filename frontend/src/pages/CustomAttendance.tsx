@@ -4,6 +4,10 @@ import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
 import { io, Socket } from 'socket.io-client';
 import { ScannerInput } from '../components/ScannerInput';
+import { HeaderActions } from '../components/HeaderActions';
+import { playErrorBeep, preloadErrorBeep } from '../utils/errorBeep';
+import { ScanBlockedPopup, BlockedScanInfo } from '../components/ScanBlockedPopup';
+import { defaultDecision, reviewDetail } from '../utils/reviewReason';
 import {
   Clock,
   Search,
@@ -27,6 +31,27 @@ interface IActiveCustomSession {
   totalStudents: number;
   attendance: any[];
 }
+
+/** Rebuilds the movement log from scans saved in the database (survives refresh/re-login). Newest first. */
+const buildMovementHistory = (students: any[]): any[] => {
+  const entries: any[] = [];
+  students.forEach(st => {
+    let lastOut: number | null = null;
+    (st.scans || []).forEach((sc: any) => {
+      const t = new Date(sc.timestamp).getTime();
+      let logMessage = 'Entered session';
+      if (sc.action === 'OUT') {
+        lastOut = t;
+        logMessage = 'Left session';
+      } else if (lastOut !== null) {
+        logMessage = `Returned (Away duration: ${Math.round((t - lastOut) / 60000)} min)`;
+        lastOut = null;
+      }
+      entries.push({ timestamp: new Date(sc.timestamp).toISOString(), rollNumber: st.rollNumber, studentName: st.studentName, logMessage });
+    });
+  });
+  return entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+};
 
 export const CustomAttendance: React.FC = () => {
   const [session, setSession] = useState<IActiveCustomSession | null>(null);
@@ -52,6 +77,7 @@ export const CustomAttendance: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [stats, setStats] = useState({ total: 0, present: 0, absent: 0, away: 0 });
   const [movementLog, setMovementLog] = useState<any[]>([]);
+  const [blockedPopup, setBlockedPopup] = useState<BlockedScanInfo | null>(null);
 
   // Flash highlight state
   const [highlightRoll, setHighlightRoll] = useState<string | null>(null);
@@ -64,6 +90,9 @@ export const CustomAttendance: React.FC = () => {
 
   const socketRef = useRef<Socket | null>(null);
 
+  // Load the alert sound ahead of time so the first refused scan beeps instantly
+  useEffect(() => { preloadErrorBeep(); }, []);
+
   // Check for active custom session on mount
   const checkActiveSession = async () => {
     try {
@@ -71,6 +100,7 @@ export const CustomAttendance: React.FC = () => {
       if (res.data.success && res.data.data) {
         const active = res.data.data;
         setSession(active);
+        setMovementLog(buildMovementHistory(active.attendance || []));
         let present = 0, absent = 0, away = 0;
         active.attendance.forEach((r: any) => {
           if (r.status === 'PRESENT') present++;
@@ -132,7 +162,7 @@ export const CustomAttendance: React.FC = () => {
     });
 
     socket.on('movementUpdated', (moveData: any) => {
-      setMovementLog((prev) => [moveData, ...prev.slice(0, 99)]);
+      setMovementLog((prev) => [moveData, ...prev]);
     });
 
     socket.on('sessionCompleted', () => {
@@ -254,7 +284,13 @@ export const CustomAttendance: React.FC = () => {
         rollNumber: barcode
       });
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Invalid barcode scanner input.');
+      const data = err.response?.data;
+      if (err.response?.status === 403 && data?.reason === 'BLOCKLIST') {
+        playErrorBeep();
+        setBlockedPopup({ message: data.message, rollNumber: data.details?.rollNumber, studentName: data.details?.studentName });
+        return;
+      }
+      toast.error(data?.message || 'Invalid barcode scanner input.');
     }
   };
 
@@ -269,7 +305,7 @@ export const CustomAttendance: React.FC = () => {
           setAwayStudents(res.data.awayStudents);
           const initialDecisions: any = {};
           res.data.awayStudents.forEach((s: any) => {
-            initialDecisions[s.rollNumber] = 'PRESENT';
+            initialDecisions[s.rollNumber] = defaultDecision(s.reason);
           });
           setReviewDecisions(initialDecisions);
           setShowReviewModal(true);
@@ -666,16 +702,19 @@ export const CustomAttendance: React.FC = () => {
             </div>
           </div>
 
-          <div className="flex justify-end pt-3 border-t border-pvpsit-border shrink-0">
+          {/* End Session lives in the top bar, next to the clock */}
+          <HeaderActions>
             <button
               onClick={handleEndSession}
-              className="px-8 py-3 bg-pvpsit-danger hover:bg-red-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm"
+              className="px-4 py-2 bg-pvpsit-danger hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-colors shadow-sm whitespace-nowrap"
             >
-              End Session & Submit
+              End Session &amp; Submit
             </button>
-          </div>
+          </HeaderActions>
         </div>
       )}
+
+      <ScanBlockedPopup info={blockedPopup} onClose={() => setBlockedPopup(null)} />
 
       {/* AWAY REVIEW DIALOG MODAL */}
       {showReviewModal && (
@@ -684,13 +723,13 @@ export const CustomAttendance: React.FC = () => {
             <div className="px-6 py-4 border-b border-pvpsit-border bg-red-50 flex items-center justify-between">
               <h3 className="font-bold text-pvpsit-danger text-sm flex items-center">
                 <AlertCircle className="w-4 h-4 mr-2" />
-                Students Currently Away
+                Students Needing Your Decision
               </h3>
             </div>
             
             <div className="p-6 space-y-4">
               <p className="text-xs text-slate-500 font-medium">
-                Select whether away students should be marked Present or Absent before final submission.
+                These students are still away, or were refused at the scanner (block list) so nothing was recorded for them. Mark each Present or Absent before final submission.
               </p>
 
               <div className="max-h-[300px] overflow-auto border border-pvpsit-border rounded-lg">
@@ -699,7 +738,7 @@ export const CustomAttendance: React.FC = () => {
                     <tr>
                       <th className="px-4 py-2.5">Roll Number</th>
                       <th className="px-4 py-2.5">Student Name</th>
-                      <th className="px-4 py-2.5">Away Duration</th>
+                      <th className="px-4 py-2.5">Reason</th>
                       <th className="px-4 py-2.5 text-right">Final Decision</th>
                     </tr>
                   </thead>
@@ -708,7 +747,7 @@ export const CustomAttendance: React.FC = () => {
                       <tr key={std.rollNumber}>
                         <td className="px-4 py-3 font-semibold text-pvpsit-dark">{std.rollNumber}</td>
                         <td className="px-4 py-3 font-medium">{std.studentName}</td>
-                        <td className="px-4 py-3">{std.totalAwayMinutes} mins</td>
+                        <td className="px-4 py-3">{reviewDetail(std)}</td>
                         <td className="px-4 py-3 text-right space-x-3">
                           <label className="inline-flex items-center cursor-pointer">
                             <input

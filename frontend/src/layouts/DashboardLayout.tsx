@@ -1,3 +1,4 @@
+import { Footer } from '../components/Footer';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -344,19 +345,23 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({ children }) =>
             </div>
           </div>
 
-          {/* Right Clock Widget */}
+          {/* Right: page actions (e.g. End Session) + Clock Widget */}
+          <div className="flex items-center space-x-3">
+          <div id="header-actions" className="flex items-center" />
           <div className="flex items-center space-x-4 bg-slate-50 px-4 py-2 rounded-lg border border-pvpsit-border">
             <Clock className="w-4 h-4 text-pvpsit-blue" />
             <span className="text-xs text-slate-600 font-medium">
               {formattedDate} | {formattedTime}
             </span>
           </div>
+          </div>
         </header>
 
         {/* MAIN VIEWPORT BODY */}
-        <main className="flex-1 overflow-auto p-8">
+        <main className="flex-1 overflow-auto p-8" style={{ scrollbarGutter: 'stable' }}>
           {children}
         </main>
+        <Footer />
       </div>
     </div>
   );

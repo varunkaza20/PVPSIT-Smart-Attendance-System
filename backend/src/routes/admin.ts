@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { AdminController } from '../controllers/AdminController';
+import { BlockListController } from '../controllers/BlockListController';
 import { authenticateJWT, authorizeAdmin } from '../middlewares/authMiddleware';
 import { validateFields } from '../middlewares/validationMiddleware';
 
 const router = Router();
 const controller = new AdminController();
+const blockList = new BlockListController();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Protect all routes under this admin router
@@ -24,6 +26,13 @@ router.put('/students/:id', controller.updateStudent);
 router.delete('/students/:id', controller.deleteStudent);
 router.post('/students/import', upload.single('file'), controller.importStudents);
 router.post('/students/import-raw', validateFields(['studentRecords']), controller.importRawStudents);
+
+// Block list (roll numbers that are not allowed to scan)
+router.get('/blocklist', blockList.list);
+router.post('/blocklist', validateFields(['rollNumbers']), blockList.add);
+router.post('/blocklist/import', upload.single('file'), blockList.importExcel);
+router.delete('/blocklist', blockList.removeAll);
+router.delete('/blocklist/:id', blockList.remove);
 
 // Subject Management
 router.get('/subjects', controller.getSubjects);

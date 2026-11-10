@@ -5,8 +5,12 @@ import { IAttendanceRecord } from '../models/AttendanceSession';
 import { Student } from '../models/Student';
 import { CustomError } from '../middlewares/errorMiddleware';
 import { ioEmitter } from '../socket/socket';
+import { BlockListService } from './BlockListService';
+import { buildReviewList, markBlockedAttempt } from '../utils/sessionReview';
+import { CustomAttendanceSession } from '../models/CustomAttendanceSession';
 
 export class CustomAttendanceService {
+  private blockList = new BlockListService();
   private customRepo = new CustomAttendanceRepository();
 
   private async generateSessionCode(): Promise<string> {
@@ -115,6 +119,14 @@ export class CustomAttendanceService {
       throw err;
     }
 
+    // Block list: these roll numbers can never scan, whatever the session roster says
+    try {
+      await this.blockList.assertNotBlocked(sessionId, rollNumber);
+    } catch (blockErr) {
+      await markBlockedAttempt(CustomAttendanceSession, sessionId, rollNumber, 'BLOCKLIST'); // faculty decides at session end
+      throw blockErr;
+    }
+
     const studentRecord = session.attendance.find(
       (r) => r.rollNumber.toUpperCase() === rollNumber.toUpperCase()
     );
@@ -181,6 +193,10 @@ export class CustomAttendanceService {
       }
     }
 
+
+    // A successful scan means any earlier refusal (since removed from the block list) no longer applies
+    studentRecord.blockedReason = undefined;
+
     await session.save();
 
     const stats = this.calculateStats(session);
@@ -225,9 +241,9 @@ export class CustomAttendanceService {
       throw err;
     }
 
-    const awayStudents = session.attendance.filter((r) => r.status === 'AWAY');
+    const reviewStudents = buildReviewList(session.attendance as any);
 
-    if (awayStudents.length > 0) {
+    if (reviewStudents.length > 0) {
       session.sessionStatus = 'ENDING';
       await session.save();
 
@@ -235,11 +251,7 @@ export class CustomAttendanceService {
 
       return {
         needsReview: true,
-        awayStudents: awayStudents.map((s) => ({
-          rollNumber: s.rollNumber,
-          studentName: s.studentName,
-          totalAwayMinutes: s.totalAwayMinutes
-        }))
+        awayStudents: reviewStudents // (name kept for compatibility; each entry has a `reason`)
       };
     }
 

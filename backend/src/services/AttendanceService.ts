@@ -2,9 +2,12 @@ import { Types } from 'mongoose';
 import { AttendanceRepository } from '../repositories/AttendanceRepository';
 import { StudentRepository } from '../repositories/StudentRepository';
 import { TimetableRepository } from '../repositories/TimetableRepository';
+import { SettingsRepository } from '../repositories/SettingsRepository';
 import { AttendanceSession, IAttendanceSession, IAttendanceRecord, IScan } from '../models/AttendanceSession';
 import { CustomError } from '../middlewares/errorMiddleware';
 import { ioEmitter } from '../socket/socket';
+import { BlockListService } from './BlockListService';
+import { buildReviewList, markBlockedAttempt } from '../utils/sessionReview';
 
 const getAcademicYear = (date: Date = new Date()): string => {
   const year = date.getFullYear();
@@ -15,9 +18,11 @@ const getAcademicYear = (date: Date = new Date()): string => {
 };
 
 export class AttendanceService {
+  private blockList = new BlockListService();
   private attendanceRepo = new AttendanceRepository();
   private studentRepo = new StudentRepository();
   private timetableRepo = new TimetableRepository();
+  private settingsRepo = new SettingsRepository();
 
   private async generateSessionCode(): Promise<string> {
     const currentYear = new Date().getFullYear().toString();
@@ -116,6 +121,28 @@ export class AttendanceService {
     return this.attendanceRepo.findActiveByFaculty(facultyId);
   }
 
+  /**
+   * Overall regular-class attendance of one student across ALL completed sessions
+   * (same definition the Defaulters report uses). Returns null if they have no completed classes yet.
+   */
+  async getOverallAttendance(rollNumber: string): Promise<{ classes: number; present: number; percentage: number } | null> {
+    const rows = await AttendanceSession.aggregate([
+      { $match: { sessionStatus: 'COMPLETED' } },
+      { $unwind: '$attendance' },
+      { $match: { 'attendance.rollNumber': rollNumber } },
+      {
+        $group: {
+          _id: null,
+          classes: { $sum: 1 },
+          present: { $sum: { $cond: [{ $eq: [{ $ifNull: ['$attendance.finalDecision', '$attendance.status'] }, 'PRESENT'] }, 1, 0] } }
+        }
+      }
+    ]);
+    if (!rows.length || rows[0].classes === 0) return null;
+    const { classes, present } = rows[0];
+    return { classes, present, percentage: Math.round((present / classes) * 1000) / 10 };
+  }
+
   async processScan(sessionId: string, rollNumber: string): Promise<any> {
     const session = await this.attendanceRepo.findById(sessionId);
     if (!session) {
@@ -128,6 +155,14 @@ export class AttendanceService {
       const err: CustomError = new Error(`Cannot scan: session is already ${session.sessionStatus.toLowerCase()}.`);
       err.statusCode = 400;
       throw err;
+    }
+
+    // Block list: these roll numbers can never scan, whatever the session roster says
+    try {
+      await this.blockList.assertNotBlocked(sessionId, rollNumber);
+    } catch (blockErr) {
+      await markBlockedAttempt(AttendanceSession, sessionId, rollNumber, 'BLOCKLIST'); // faculty decides at session end
+      throw blockErr;
     }
 
     const studentRecord = session.attendance.find(
@@ -149,6 +184,31 @@ export class AttendanceService {
     }
 
     const timestamp = new Date();
+
+    // Defaulters are blocked from scanning: nothing about their attendance record changes.
+    const [settings, overall] = await Promise.all([
+      this.settingsRepo.getSettings(),
+      this.getOverallAttendance(studentRecord.rollNumber)
+    ]);
+    if (overall && overall.percentage < settings.attendanceThreshold) {
+      ioEmitter.emitMovementUpdated(sessionId, {
+        timestamp,
+        rollNumber: studentRecord.rollNumber,
+        studentName: studentRecord.studentName,
+        logMessage: `BLOCKED - Defaulter (${overall.percentage}% attendance, below ${settings.attendanceThreshold}%)`
+      });
+      const err: CustomError = new Error(`Defaulter: Attendance less than ${settings.attendanceThreshold}%, Consult faculty`);
+      err.statusCode = 403;
+      err.reason = 'DEFAULTER';
+      await markBlockedAttempt(AttendanceSession, sessionId, studentRecord.rollNumber, 'DEFAULTER'); // faculty decides at session end
+      err.details = {
+        rollNumber: studentRecord.rollNumber,
+        studentName: studentRecord.studentName,
+        percentage: overall.percentage,
+        threshold: settings.attendanceThreshold
+      };
+      throw err;
+    }
 
     // 5-second cooldown check to prevent accidental double-scanning
     const lastScan = studentRecord.scans[studentRecord.scans.length - 1];
@@ -197,6 +257,9 @@ export class AttendanceService {
       }
     }
 
+    // A successful scan means any earlier refusal (since removed from the block list) no longer applies
+    studentRecord.blockedReason = undefined;
+
     await session.save();
 
     // Compute updated stats
@@ -243,10 +306,10 @@ export class AttendanceService {
       throw err;
     }
 
-    // Check if there are any AWAY students
-    const awayStudents = session.attendance.filter((r) => r.status === 'AWAY');
+    // Students the faculty must decide on: still AWAY, or refused at the scanner (defaulter / block list)
+    const reviewStudents = buildReviewList(session.attendance as any);
 
-    if (awayStudents.length > 0) {
+    if (reviewStudents.length > 0) {
       session.sessionStatus = 'ENDING';
       await session.save();
 
@@ -255,15 +318,11 @@ export class AttendanceService {
 
       return {
         needsReview: true,
-        awayStudents: awayStudents.map((s) => ({
-          rollNumber: s.rollNumber,
-          studentName: s.studentName,
-          totalAwayMinutes: s.totalAwayMinutes
-        }))
+        awayStudents: reviewStudents // (name kept for compatibility; each entry has a `reason`)
       };
     }
 
-    // No away students - close immediately
+    // Nobody to review - close immediately
     return this.finalizeSession(sessionId, []);
   }
 

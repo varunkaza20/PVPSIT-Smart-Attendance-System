@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
-import { Upload, Trash, Pencil, Users, Info, ShieldAlert, Plus, UserCheck } from 'lucide-react';
+import { Upload, Trash, Pencil, Users, Info, ShieldAlert, Plus, UserCheck, Ban } from 'lucide-react';
+import { BlockListTab } from './BlockListTab';
 import { ConfirmModal } from '../../components/ConfirmModal';
 
 interface IStudent {
@@ -20,7 +21,7 @@ interface IStudent {
 }
 
 export const StudentManagement: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'roster' | 'bulk-import' | 'custom-list'>('roster');
+  const [activeTab, setActiveTab] = useState<'roster' | 'bulk-import' | 'custom-list' | 'block-list'>('roster');
   const [students, setStudents] = useState<IStudent[]>([]);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState({
@@ -328,6 +329,15 @@ export const StudentManagement: React.FC = () => {
           <Plus className="w-4 h-4 mr-1.5" />
           Training / FDP Programs
         </button>
+        <button
+          onClick={() => setActiveTab('block-list')}
+          className={`flex items-center px-4 py-2.5 text-xs font-bold rounded-lg transition-colors ${
+            activeTab === 'block-list' ? 'bg-pvpsit-danger text-white' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Ban className="w-4 h-4 mr-1.5" />
+          Block List
+        </button>
       </div>
 
       {/* --- TAB 1: ROSTER VIEW --- */}
@@ -428,6 +438,9 @@ export const StudentManagement: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* --- TAB 4: BLOCK LIST --- */}
+      {activeTab === 'block-list' && <BlockListTab />}
 
       {/* --- TAB 2: EXCEL SPREADSHEET IMPORT --- */}
       {activeTab === 'bulk-import' && (

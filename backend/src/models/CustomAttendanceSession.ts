@@ -33,7 +33,8 @@ const CustomAttendanceRecordSchema = new Schema<IAttendanceRecord>({
   status: { type: String, enum: ['PRESENT', 'ABSENT', 'AWAY'], default: 'ABSENT' },
   scans: [ScanSchema],
   totalAwayMinutes: { type: Number, default: 0 },
-  finalDecision: { type: String, enum: ['PRESENT', 'ABSENT'] }
+  finalDecision: { type: String, enum: ['PRESENT', 'ABSENT'] },
+  blockedReason: { type: String, enum: ['DEFAULTER', 'BLOCKLIST'] }
 }, { _id: false });
 
 const CustomAttendanceSessionSchema = new Schema<ICustomAttendanceSession>(

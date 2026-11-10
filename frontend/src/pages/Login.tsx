@@ -4,6 +4,7 @@ import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
+import { Footer } from '../components/Footer';
 
 export const Login: React.FC = () => {
   const { login } = useAuth();
@@ -38,7 +39,8 @@ export const Login: React.FC = () => {
   };
 
   return (
-    <div className="flex min-h-screen w-screen items-center justify-center bg-pvpsit-bg px-4">
+    <div className="flex h-screen w-screen flex-col bg-pvpsit-bg">
+      <div className="flex flex-1 items-center justify-center overflow-auto px-4 py-8">
       <div className="w-full max-w-md bg-pvpsit-card rounded-xl border border-pvpsit-border shadow-sm p-8">
         
         {/* LOGO & TITLE */}
@@ -107,6 +109,8 @@ export const Login: React.FC = () => {
           </button>
         </form>
       </div>
+      </div>
+      <Footer />
     </div>
   );
 };

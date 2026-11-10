@@ -5,6 +5,10 @@ export interface CustomError extends Error {
   code?: number;
   errors?: any[];
   keyValue?: any;
+  /** Machine-readable reason the client can react to (e.g. 'DEFAULTER') */
+  reason?: string;
+  /** Extra context for the client (e.g. which student was blocked) */
+  details?: Record<string, unknown>;
 }
 
 export const errorHandler = (
@@ -46,7 +50,9 @@ export const errorHandler = (
   res.status(statusCode).json({
     success: false,
     message,
-    errors: errors.length > 0 ? errors : undefined
+    errors: errors.length > 0 ? errors : undefined,
+    reason: err.reason,
+    details: err.details
   });
 };
 

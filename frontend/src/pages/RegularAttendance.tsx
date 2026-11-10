@@ -3,6 +3,10 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { io, Socket } from 'socket.io-client';
 import { ScannerInput } from '../components/ScannerInput';
+import { HeaderActions } from '../components/HeaderActions';
+import { playErrorBeep, preloadErrorBeep } from '../utils/errorBeep';
+import { ScanBlockedPopup, BlockedScanInfo } from '../components/ScanBlockedPopup';
+import { defaultDecision, reviewDetail } from '../utils/reviewReason';
 import {
   Play,
   AlertCircle,
@@ -53,6 +57,31 @@ interface IActiveSession {
   attendance: IStudentScanned[];
 }
 
+/**
+ * Rebuilds the movement log from the scans saved in the database, so the log shows EVERYTHING
+ * that happened in the session even after a refresh/re-login (live entries only exist in memory).
+ * Newest first. Same wording as the live messages sent by the server.
+ */
+const buildMovementHistory = (students: IStudentScanned[]): IMovementLog[] => {
+  const entries: IMovementLog[] = [];
+  students.forEach(st => {
+    let lastOut: number | null = null;
+    (st.scans || []).forEach((sc: any) => {
+      const t = new Date(sc.timestamp).getTime();
+      let logMessage = 'Entered class';
+      if (sc.action === 'OUT') {
+        lastOut = t;
+        logMessage = 'Left class';
+      } else if (lastOut !== null) {
+        logMessage = `Returned (Away duration: ${Math.round((t - lastOut) / 60000)} min)`;
+        lastOut = null;
+      }
+      entries.push({ timestamp: new Date(sc.timestamp).toISOString(), rollNumber: st.rollNumber, studentName: st.studentName, logMessage });
+    });
+  });
+  return entries.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+};
+
 export const RegularAttendance: React.FC = () => {
   // Navigation Stage
   const [session, setSession] = useState<IActiveSession | null>(null);
@@ -72,6 +101,7 @@ export const RegularAttendance: React.FC = () => {
   const [elapsedTime, setElapsedTime] = useState('00:00:00');
   const [stats, setStats] = useState({ total: 0, present: 0, absent: 0, away: 0 });
   const [movementLog, setMovementLog] = useState<IMovementLog[]>([]);
+  const [blockedPopup, setBlockedPopup] = useState<BlockedScanInfo | null>(null);
   
   // Highlight flash state
   const [highlightRoll, setHighlightRoll] = useState<string | null>(null);
@@ -108,6 +138,9 @@ export const RegularAttendance: React.FC = () => {
     }
   };
 
+  // Load the alert sound ahead of time so the first refused scan beeps instantly
+  useEffect(() => { preloadErrorBeep(); }, []);
+
   // Check for pre-existing active session on mount
   const checkActiveSession = async () => {
     try {
@@ -115,6 +148,7 @@ export const RegularAttendance: React.FC = () => {
       if (res.data.success && res.data.data) {
         const active = res.data.data;
         setSession(active);
+        setMovementLog(buildMovementHistory(active.attendance));
         // Initialize local stats from session data
         let present = 0, absent = 0, away = 0;
         active.attendance.forEach((r: any) => {
@@ -209,7 +243,7 @@ export const RegularAttendance: React.FC = () => {
     });
 
     socket.on('movementUpdated', (moveData: any) => {
-      setMovementLog((prev) => [moveData, ...prev.slice(0, 99)]); // keep latest 100 entries
+      setMovementLog((prev) => [moveData, ...prev]); // keep every entry of the session
     });
 
     socket.on('sessionEnding', () => {
@@ -257,7 +291,24 @@ export const RegularAttendance: React.FC = () => {
         rollNumber: barcode
       });
     } catch (err: any) {
-      toast.error(err.response?.data?.message || 'Invalid barcode scanner input.');
+      const data = err.response?.data;
+      if (err.response?.status === 403 && data?.reason === 'BLOCKLIST') {
+        playErrorBeep();
+        setBlockedPopup({ message: data.message, rollNumber: data.details?.rollNumber, studentName: data.details?.studentName });
+        return;
+      }
+      if (err.response?.status === 403 && data?.reason === 'DEFAULTER') {
+        // Blocked defaulter: double beep + the same pop-up used for the block list
+        playErrorBeep();
+        setBlockedPopup({
+          message: data.message,
+          rollNumber: data.details?.rollNumber,
+          studentName: data.details?.studentName,
+          detail: data.details?.percentage != null ? `Current attendance: ${data.details.percentage}%` : undefined
+        });
+        return;
+      }
+      toast.error(data?.message || 'Invalid barcode scanner input.');
     }
   };
 
@@ -287,7 +338,7 @@ export const RegularAttendance: React.FC = () => {
           // Initialize review decisions to PRESENT by default
           const initialDecisions: any = {};
           res.data.awayStudents.forEach((s: any) => {
-            initialDecisions[s.rollNumber] = 'PRESENT';
+            initialDecisions[s.rollNumber] = defaultDecision(s.reason);
           });
           setReviewDecisions(initialDecisions);
           setShowReviewModal(true);
@@ -615,17 +666,19 @@ export const RegularAttendance: React.FC = () => {
             </div>
           </div>
 
-          {/* End session bar */}
-          <div className="flex justify-end pt-3 border-t border-pvpsit-border shrink-0">
+          {/* End Session lives in the top bar, next to the clock */}
+          <HeaderActions>
             <button
               onClick={handleEndSession}
-              className="px-8 py-3 bg-pvpsit-danger hover:bg-red-700 text-white rounded-lg text-sm font-bold transition-colors shadow-sm"
+              className="px-4 py-2 bg-pvpsit-danger hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-colors shadow-sm whitespace-nowrap"
             >
-              End Session & Submit
+              End Session &amp; Submit
             </button>
-          </div>
+          </HeaderActions>
         </div>
       )}
+
+      <ScanBlockedPopup info={blockedPopup} onClose={() => setBlockedPopup(null)} />
 
       {/* AWAY REVIEW DIALOG MODAL */}
       {showReviewModal && (
@@ -634,13 +687,13 @@ export const RegularAttendance: React.FC = () => {
             <div className="px-6 py-4 border-b border-pvpsit-border bg-red-50 flex items-center justify-between">
               <h3 className="font-bold text-pvpsit-danger text-sm flex items-center">
                 <AlertCircle className="w-4 h-4 mr-2" />
-                Students Currently Away
+                Students Needing Your Decision
               </h3>
             </div>
             
             <div className="p-6 space-y-4">
               <p className="text-xs text-slate-500 font-medium">
-                The following students were scanned OUT and are still away. Select whether they should be marked Present or Absent before final submission.
+                These students were scanned OUT and are still away, or were refused at the scanner (defaulter / block list) so nothing was recorded for them. Mark each Present or Absent before final submission.
               </p>
 
               <div className="max-h-[300px] overflow-auto border border-pvpsit-border rounded-lg">
@@ -649,7 +702,7 @@ export const RegularAttendance: React.FC = () => {
                     <tr>
                       <th className="px-4 py-2.5">Roll Number</th>
                       <th className="px-4 py-2.5">Student Name</th>
-                      <th className="px-4 py-2.5">Away Duration</th>
+                      <th className="px-4 py-2.5">Reason</th>
                       <th className="px-4 py-2.5 text-right">Final Decision</th>
                     </tr>
                   </thead>
@@ -658,7 +711,7 @@ export const RegularAttendance: React.FC = () => {
                       <tr key={std.rollNumber}>
                         <td className="px-4 py-3 font-semibold text-pvpsit-dark">{std.rollNumber}</td>
                         <td className="px-4 py-3 font-medium">{std.studentName}</td>
-                        <td className="px-4 py-3">{std.totalAwayMinutes} mins</td>
+                        <td className="px-4 py-3">{reviewDetail(std)}</td>
                         <td className="px-4 py-3 text-right space-x-3">
                           <label className="inline-flex items-center cursor-pointer">
                             <input
